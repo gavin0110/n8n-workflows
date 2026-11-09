@@ -1,0 +1,748 @@
+{
+  "name": "Brindle & Kiln Order Processing",
+  "nodes": [
+    {
+      "id": "cdb6cb4c-1e28-5884-a55b-1842936025ea",
+      "name": "New Order Received",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        240
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-order-received",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "67a5ac58-26d6-58bb-9557-7498b52bd6a1",
+      "name": "Clean And Validate Order",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        240
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst body = $json.body || {};\nconst tally = body.data && Array.isArray(body.data.fields);\nlet raw;\nlet resolved = null;\nif (tally) {\n  const f = {};\n  for (const field of body.data.fields) {\n    let v = field.value;\n    if (Array.isArray(v) && Array.isArray(field.options)) {\n      v = v.map(id => (field.options.find(o => o.id === id) || {}).text).filter(Boolean).join(', ');\n    }\n    f[field.label] = v;\n  }\n  resolved = f;\n  raw = {\n    order_id: f['order_id'], customer_name: f['Full Name'], email: f['Email'],\n    product: f['Product'], quantity: f['Quantity'], price: null,\n    shipping_address: f['Shipping Address'], order_date: body.data.createdAt,\n  };\n  const m = String(raw.product || '').match(/^(.*?),\\s*CHF\\s*([\\d.]+)\\s*$/);\n  if (m) { raw.product = m[1]; raw.price = m[2]; }\n} else {\n  raw = {\n    order_id: body.order_id ?? body.orderId, customer_name: body.customer_name ?? body.customerName,\n    email: body.email, product: body.product ?? body.product_name, quantity: body.quantity,\n    price: body.price, shipping_address: body.shipping_address ?? body.shippingAddress,\n    order_date: body.order_date ?? body.date,\n  };\n}\n\nconst text = v => (v === undefined || v === null) ? '' : String(v).replace(/\\s+/g, ' ').trim();\nconst orderId = text(raw.order_id).toUpperCase();\nconst customerName = text(raw.customer_name);\nconst email = text(raw.email).toLowerCase();\nconst product = text(raw.product);\nconst shippingAddress = String(raw.shipping_address ?? '').split(/\\n+/).map(l => text(l).replace(/,+$/, '')).filter(Boolean).join(', ');\nconst qtyText = text(raw.quantity);\nconst priceText = text(raw.price).replace(/^CHF\\s*/i, '');\n\nconst missing = [];\nif (!orderId) missing.push('Order ID');\nif (!customerName) missing.push('Customer Name');\nif (!email) missing.push('Email');\nif (!product) missing.push('Product');\nif (!qtyText) missing.push('Quantity');\nif (!priceText) missing.push('Price');\nif (!shippingAddress) missing.push('Shipping Address');\n\nconst invalid = [];\nif (email && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$/.test(email)) invalid.push('Email \"' + email + '\" is not a valid address');\nconst quantity = Number(qtyText);\nif (qtyText && (!Number.isInteger(quantity) || quantity < 1)) invalid.push('Quantity \"' + qtyText + '\" is not a whole number above 0');\nconst unitPrice = Number(priceText);\nif (priceText && (!Number.isFinite(unitPrice) || unitPrice <= 0)) invalid.push('Price \"' + priceText + '\" is not a valid amount');\n\nconst when = raw.order_date ? DateTime.fromISO(String(raw.order_date)) : null;\nconst orderDate = (when && when.isValid ? when : $now).setZone('Europe/Zurich').toFormat('yyyy-MM-dd HH:mm');\n\nconst problems = [];\nif (missing.length) problems.push('Missing: ' + missing.join(', '));\nproblems.push(...invalid);\n\nreturn { json: {\n  orderId, orderDate, customerName, email, product,\n  quantity: Number.isInteger(quantity) ? quantity : qtyText,\n  unitPrice: Number.isFinite(unitPrice) ? Math.round(unitPrice * 100) / 100 : priceText,\n  total: problems.length ? '' : Math.round(quantity * unitPrice * 100) / 100,\n  shippingAddress,\n  valid: problems.length === 0,\n  errorType: missing.length ? 'Missing Fields' : (invalid.length ? 'Invalid Data' : ''),\n  problems: problems.join('. '),\n  orderData: JSON.stringify(resolved || body),\n} };\n"
+      }
+    },
+    {
+      "id": "e122caa6-c97f-50ab-9d2c-4b6da10de1f5",
+      "name": "Order Valid?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        448,
+        240
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.valid }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "29476e6f-97bd-539c-9764-e05e8748f3aa",
+      "name": "Check For Existing Order",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "alwaysOutputData": true,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "position": [
+        672,
+        176
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Orders"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Order ID",
+              "lookupValue": "={{ $json.orderId }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      }
+    },
+    {
+      "id": "edf826f0-cc7a-5d86-beff-3ea4acd9a4c3",
+      "name": "Prepare Error Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1792,
+        272
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst o = $('Clean And Validate Order').first().json;\nconst now = $now.setZone('Europe/Zurich').toFormat('yyyy-MM-dd HH:mm');\nlet errorType = o.errorType;\nlet details = o.problems;\n\nif ($json.error) {\n  const e = $json.error;\n  const message = (typeof e === 'string' ? e : (e.description || e.message)) || 'Unknown error';\n  const step = $('Send Order Confirmation').isExecuted ? 'Customer confirmation email'\n    : $('Email Order Summary To Owner').isExecuted ? 'Owner notification email'\n    : $('Save Order').isExecuted ? 'Saving the order to the sheet'\n    : 'Checking for a duplicate order';\n  const saved = $('Save Order').isExecuted && step !== 'Saving the order to the sheet';\n  errorType = 'Step Failed';\n  details = step + ' failed: ' + message + '. ' + (saved ? 'The order IS saved on the Orders tab.' : 'The order was NOT saved.');\n} else if (o.valid) {\n  const existing = $json;\n  errorType = 'Duplicate Order';\n  details = 'Order ' + o.orderId + ' is already on the Orders tab (saved ' + (existing['Date'] || 'earlier') + '). This copy was not saved again.';\n}\n\nconst row = (k, v) => '<tr><td style=\"padding:6px 10px;color:#6b7280;width:150px;vertical-align:top\">' + k + '</td><td style=\"padding:6px 10px\">' + (v === '' || v === undefined ? '-' : v) + '</td></tr>';\nconst alertHtml = '<div style=\"font-family:Arial,sans-serif;font-size:14px;color:#1f2a37;max-width:620px\">'\n  + '<div style=\"background:#9b1c1c;color:#fff;padding:12px 16px;font-weight:bold\">Order Needs Attention: ' + errorType + '</div>'\n  + '<p style=\"margin:10px 0\">' + details + '</p>'\n  + '<table style=\"border-collapse:collapse;width:100%\">'\n  + row('Order ID', o.orderId) + row('Customer', o.customerName) + row('Email', o.email)\n  + row('Product', o.product) + row('Quantity', o.quantity) + row('Ship To', o.shippingAddress)\n  + '</table><p style=\"margin:14px 0 0\">Logged on the Errors tab with the full order data. <a href=\"YOUR_GOOGLE_SHEET_URL\">Open the order sheet</a></p></div>';\n\nreturn { json: {\n  loggedAt: now, orderId: o.orderId || '(none)', customerName: o.customerName, email: o.email,\n  errorType, details, orderData: o.orderData,\n  alertSubject: 'Order Needs Attention: ' + (o.orderId || 'no order ID') + ' (' + errorType + ')',\n  alertHtml,\n} };\n"
+      }
+    },
+    {
+      "id": "88d0447d-0503-541a-a849-2746dbd57ecc",
+      "name": "Already Saved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        896,
+        96
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json['Order ID'] }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "6150cfa3-d4d2-53c1-b9b2-7beca0b0a053",
+      "name": "Save Order",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "position": [
+        1120,
+        176
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Orders"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Order ID": "={{ $('Clean And Validate Order').first().json.orderId }}",
+            "Date": "={{ $('Clean And Validate Order').first().json.orderDate }}",
+            "Customer Name": "={{ $('Clean And Validate Order').first().json.customerName }}",
+            "Email": "={{ $('Clean And Validate Order').first().json.email }}",
+            "Product": "={{ $('Clean And Validate Order').first().json.product }}",
+            "Quantity": "={{ $('Clean And Validate Order').first().json.quantity }}",
+            "Unit Price (CHF)": "={{ $('Clean And Validate Order').first().json.unitPrice }}",
+            "Total (CHF)": "={{ $('Clean And Validate Order').first().json.total }}",
+            "Shipping Address": "={{ $('Clean And Validate Order').first().json.shippingAddress }}",
+            "Status": "New"
+          },
+          "schema": [
+            {
+              "id": "Order ID",
+              "displayName": "Order ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Customer Name",
+              "displayName": "Customer Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Product",
+              "displayName": "Product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Quantity",
+              "displayName": "Quantity",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Unit Price (CHF)",
+              "displayName": "Unit Price (CHF)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Total (CHF)",
+              "displayName": "Total (CHF)",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Shipping Address",
+              "displayName": "Shipping Address",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9a64dc79-c51c-593d-8633-b2bfb7afe5e3",
+      "name": "Build Order Emails",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        96
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "\nconst o = $('Clean And Validate Order').first().json;\nconst chf = n => 'CHF ' + Number(n).toFixed(2);\nconst row = (k, v) => '<tr><td style=\"padding:6px 10px;color:#6b5e55;width:150px;vertical-align:top\">' + k + '</td><td style=\"padding:6px 10px\">' + v + '</td></tr>';\nconst firstName = o.customerName.split(' ')[0];\n\nconst ownerHtml = '<div style=\"font-family:Arial,sans-serif;font-size:14px;color:#2b2420;max-width:620px\">'\n  + '<div style=\"background:#8c543d;color:#fff;padding:12px 16px;font-weight:bold\">New Order ' + o.orderId + '</div>'\n  + '<table style=\"border-collapse:collapse;width:100%;margin-top:8px\">'\n  + row('Order ID', o.orderId) + row('Date', o.orderDate) + row('Customer', o.customerName) + row('Email', o.email)\n  + row('Product', o.product) + row('Quantity', o.quantity) + row('Unit Price', chf(o.unitPrice))\n  + row('Total', '<b>' + chf(o.total) + '</b>') + row('Ship To', o.shippingAddress) + row('Status', 'New')\n  + '</table><p style=\"margin:14px 0 0\"><a href=\"YOUR_GOOGLE_SHEET_URL\">Open the order sheet</a></p></div>';\n\nconst customerHtml = '<div style=\"font-family:Georgia,serif;font-size:15px;color:#2b2420;max-width:560px;line-height:1.5\">'\n  + '<p style=\"font-size:20px;margin:0 0 14px\">Brindle &amp; Kiln</p>'\n  + '<p>Hi ' + firstName + ',</p>'\n  + '<p>Thank you for your order. Every piece is made by hand in our Geneva studio, and yours is now in the queue.</p>'\n  + '<table style=\"border-collapse:collapse;width:100%;font-family:Arial,sans-serif;font-size:14px;background:#f7f2ee\">'\n  + row('Order', o.orderId) + row('Item', o.quantity + ' x ' + o.product) + row('Total', chf(o.total)) + row('Shipping To', o.shippingAddress)\n  + '</table>'\n  + '<p>We will email you again as soon as it is on its way. If anything looks wrong, just reply to this email.</p>'\n  + '<p>Warm regards,<br>The Brindle &amp; Kiln Studio</p></div>';\n\nreturn { json: {\n  ownerSubject: 'New Order ' + o.orderId + ': ' + o.quantity + ' x ' + o.product + ' (' + chf(o.total) + ')',\n  ownerHtml,\n  customerTo: o.email,\n  customerSubject: 'Thank you for your order, ' + firstName + ' (' + o.orderId + ')',\n  customerHtml,\n} };\n"
+      }
+    },
+    {
+      "id": "6a55df6b-954c-54e0-8120-436e1d4addea",
+      "name": "Email Order Summary To Owner",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "position": [
+        1568,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "you@example.com",
+        "subject": "={{ $json.ownerSubject }}",
+        "emailType": "html",
+        "message": "={{ $json.ownerHtml }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "Brindle & Kiln Orders"
+        }
+      }
+    },
+    {
+      "id": "aa3af39a-1efe-5d12-acc8-2d7fae9b2aec",
+      "name": "Send Order Confirmation",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput",
+      "position": [
+        1568,
+        192
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('Build Order Emails').first().json.customerTo }}",
+        "subject": "={{ $('Build Order Emails').first().json.customerSubject }}",
+        "emailType": "html",
+        "message": "={{ $('Build Order Emails').first().json.customerHtml }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "Brindle & Kiln",
+          "replyTo": "you@example.com"
+        }
+      }
+    },
+    {
+      "id": "ad53ab0b-3816-5b38-85a8-8acde16a3c5e",
+      "name": "Log To Errors Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueRegularOutput",
+      "position": [
+        2016,
+        272
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Errors"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Logged At": "={{ $('Prepare Error Record').first().json.loggedAt }}",
+            "Order ID": "={{ $('Prepare Error Record').first().json.orderId }}",
+            "Customer Name": "={{ $('Prepare Error Record').first().json.customerName }}",
+            "Email": "={{ $('Prepare Error Record').first().json.email }}",
+            "Error Type": "={{ $('Prepare Error Record').first().json.errorType }}",
+            "Details": "={{ $('Prepare Error Record').first().json.details }}",
+            "Status": "Needs Review",
+            "Order Data": "={{ $('Prepare Error Record').first().json.orderData }}"
+          },
+          "schema": [
+            {
+              "id": "Logged At",
+              "displayName": "Logged At",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Order ID",
+              "displayName": "Order ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Customer Name",
+              "displayName": "Customer Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Error Type",
+              "displayName": "Error Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Details",
+              "displayName": "Details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Order Data",
+              "displayName": "Order Data",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9b4ac427-cca7-578c-aa6d-8acbaec2191a",
+      "name": "Alert Owner",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "position": [
+        2240,
+        272
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "you@example.com",
+        "subject": "={{ $('Prepare Error Record').first().json.alertSubject }}",
+        "emailType": "html",
+        "message": "={{ $('Prepare Error Record').first().json.alertHtml }}",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "Brindle & Kiln Orders"
+        }
+      }
+    },
+    {
+      "id": "d91a2cda-d2c7-5e51-bcad-dee456a52c41",
+      "name": "If The Workflow Itself Fails",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        496
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "474dbed9-2b17-51a0-8e29-af327833d994",
+      "name": "Alert Owner Of Workflow Failure",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        496
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "you@example.com",
+        "subject": "Order Workflow Failed, Check The Last Order",
+        "emailType": "html",
+        "message": "=<div style=\"font-family:Arial,sans-serif;font-size:14px\"><p><b>The order workflow stopped on {{ $json.execution.lastNodeExecuted }}.</b></p><p>{{ $json.execution.error.message }}</p><p>The incoming order is kept in the execution log: <a href=\"{{ $json.execution.url }}\">open the failed run</a>.</p></div>",
+        "options": {
+          "appendAttribution": false,
+          "senderName": "Brindle & Kiln Orders"
+        }
+      }
+    },
+    {
+      "id": "22c35930-f936-5c34-a3e3-46bd4ffc8d19",
+      "name": "Sticky Note 599cf7d5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        40
+      ],
+      "parameters": {
+        "content": "## 1. Receive And Validate\nOrder form posts to the webhook. Text is trimmed, the date set to Swiss time, the total calculated. Missing fields, a bad email or a non-numeric quantity or price send the order to Errors.",
+        "color": 7,
+        "width": 440,
+        "height": 170
+      }
+    },
+    {
+      "id": "250d4a27-c304-5adf-9679-8c042049c8a6",
+      "name": "Sticky Note 39ac6ee8",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        672,
+        -200
+      ],
+      "parameters": {
+        "content": "## 2. Save And Notify\nOrder ID checked against the Orders tab first. A new order is saved with Status New, then the owner summary and the customer confirmation go out.",
+        "color": 4,
+        "width": 440,
+        "height": 170
+      }
+    },
+    {
+      "id": "ebc46093-7f69-5881-90da-2f461b15f972",
+      "name": "Sticky Note 7d25b81c",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1792,
+        420
+      ],
+      "parameters": {
+        "content": "## 3. Nothing Gets Lost\nInvalid orders, duplicates and any failed step land on the Errors tab with the full order data, and the owner gets an alert. Every external step retries 3 times first.",
+        "color": 3,
+        "width": 440,
+        "height": 170
+      }
+    }
+  ],
+  "connections": {
+    "New Order Received": {
+      "main": [
+        [
+          {
+            "node": "Clean And Validate Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean And Validate Order": {
+      "main": [
+        [
+          {
+            "node": "Order Valid?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order Valid?": {
+      "main": [
+        [
+          {
+            "node": "Check For Existing Order",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Error Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check For Existing Order": {
+      "main": [
+        [
+          {
+            "node": "Already Saved?",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Error Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Error Record": {
+      "main": [
+        [
+          {
+            "node": "Log To Errors Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Already Saved?": {
+      "main": [
+        [
+          {
+            "node": "Prepare Error Record",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Save Order",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Order": {
+      "main": [
+        [
+          {
+            "node": "Build Order Emails",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Prepare Error Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Order Emails": {
+      "main": [
+        [
+          {
+            "node": "Email Order Summary To Owner",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Send Order Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Order Summary To Owner": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Prepare Error Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Order Confirmation": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Prepare Error Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log To Errors Tab": {
+      "main": [
+        [
+          {
+            "node": "Alert Owner",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If The Workflow Itself Fails": {
+      "main": [
+        [
+          {
+            "node": "Alert Owner Of Workflow Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/Zurich"
+  },
+  "pinData": {}
+}

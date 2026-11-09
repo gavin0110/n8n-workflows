@@ -1,0 +1,606 @@
+{
+  "name": "Sunpath Solar Lead Qualifier",
+  "nodes": [
+    {
+      "id": "7bae6f96-b776-57d4-974f-76f79e075ebc",
+      "name": "Website Enquiry",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        0,
+        320
+      ],
+      "parameters": {
+        "formTitle": "Get a free solar assessment - Sunpath Solar & Electrical",
+        "formDescription": "Tell us about your property and your power bill. One of our consultants will get back to you.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Full Name",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Email",
+              "fieldType": "email",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Phone"
+            },
+            {
+              "fieldLabel": "Suburb",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Property Type",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Freestanding house"
+                  },
+                  {
+                    "option": "Townhouse or duplex"
+                  },
+                  {
+                    "option": "Apartment"
+                  },
+                  {
+                    "option": "Commercial premises"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Quarterly Electricity Bill",
+              "fieldType": "dropdown",
+              "fieldOptions": {
+                "values": [
+                  {
+                    "option": "Under $300"
+                  },
+                  {
+                    "option": "$300 to $600"
+                  },
+                  {
+                    "option": "$600 to $1,000"
+                  },
+                  {
+                    "option": "Over $1,000"
+                  }
+                ]
+              },
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Your message",
+              "fieldType": "textarea"
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "buttonLabel": "Request my assessment"
+        }
+      }
+    },
+    {
+      "id": "59474edb-3942-5d10-9cdf-14191e70d856",
+      "name": "Normalize Enquiry",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        240,
+        320
+      ],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "fullName",
+              "value": "={{ $json[\"Full Name\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "email",
+              "value": "={{ $json[\"Email\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "a3",
+              "name": "phone",
+              "value": "={{ $json[\"Phone\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "suburb",
+              "value": "={{ $json[\"Suburb\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "a5",
+              "name": "propertyType",
+              "value": "={{ $json[\"Property Type\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "a6",
+              "name": "billBand",
+              "value": "={{ $json[\"Quarterly Electricity Bill\"] }}",
+              "type": "string"
+            },
+            {
+              "id": "a7",
+              "name": "message",
+              "value": "={{ $json[\"Your message\"] }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2d0f5250-ad05-5753-aeee-7bc125c0c9ca",
+      "name": "Qualify Lead",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        464,
+        320
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=New solar enquiry:\nName: {{ $json.fullName }}\nEmail: {{ $json.email }}\nPhone: {{ $json.phone }}\nSuburb: {{ $json.suburb }}\nProperty type: {{ $json.propertyType }}\nQuarterly bill: {{ $json.billBand }}\nMessage: {{ $json.message }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You qualify inbound enquiries for Sunpath Solar & Electrical, a residential and commercial solar installer in Western Sydney, Australia. Grade each enquiry as \"hot\", \"warm\" or \"cold\".\n\nRules:\n- hot: owns a freestanding house or commercial premises, quarterly bill of $600 or more, and clear intent to get solar. Ready for a site assessment.\n- warm: interested but lower usage, a townhouse or duplex, or a vague message with no timeframe. Worth a call, lower priority.\n- cold: an apartment (no roof to install on), outside the service area, off topic or spam. Do not book an assessment.\n\nEstimate estimated_system_size_kw from the bill band and property type, using common Australian residential sizes (6.6, 10, 13.2) and larger for commercial. Estimate estimated_annual_savings_aud from the bill band. Write situation_summary in one short sentence.\n\nWrite draft_email: a short, warm reply from the Sunpath team. Thank them, confirm Sunpath can help with their situation, and say a consultant will be in touch to arrange the site assessment. Do not invent a specific time, a price, or a rebate amount. Under 90 words.\n\nReturn only the structured fields."
+        }
+      }
+    },
+    {
+      "id": "b3f00d5f-a339-5076-a57f-f789f4d53385",
+      "name": "GPT-5.4 mini",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        320,
+        544
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5.4-mini",
+          "cachedResultName": "gpt-5.4-mini"
+        },
+        "responsesApiEnabled": false,
+        "options": {}
+      }
+    },
+    {
+      "id": "5cdc48da-e5f4-567c-ba70-657abe3eb4ff",
+      "name": "Lead Schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        528,
+        544
+      ],
+      "parameters": {
+        "jsonSchemaExample": "{ \"grade\": \"hot\", \"estimated_system_size_kw\": 6.6, \"estimated_annual_savings_aud\": 1450, \"situation_summary\": \"Freestanding house in Penrith, bill over $1,000 a quarter, wants to move before summer\", \"summary\": \"Strong fit. Owns the roof, high usage, ready to move. Book a site assessment.\", \"reasoning\": \"Freestanding house, highest bill band, clear intent.\", \"draft_email\": \"Hi Dave, thanks for getting in touch with Sunpath. A bill that size on a freestanding roof is exactly the situation we work with. One of our consultants will be in touch to arrange a site assessment. Sunpath Solar & Electrical\" }"
+      }
+    },
+    {
+      "id": "e5f7717a-8688-52b5-880d-fe95d2cf40db",
+      "name": "Route by Grade",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        768,
+        320
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.output.grade }}",
+                    "rightValue": "hot",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  },
+                  {
+                    "leftValue": "={{ $json.output.grade }}",
+                    "rightValue": "warm",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.output.grade }}",
+                    "rightValue": "cold",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Needs Review"
+        }
+      }
+    },
+    {
+      "id": "475e04d1-0c7a-5acc-bd94-cf9fad7ed72a",
+      "name": "Create Solar Lead",
+      "type": "n8n-nodes-base.zohoCrm",
+      "typeVersion": 1,
+      "position": [
+        1024,
+        128
+      ],
+      "parameters": {
+        "resource": "lead",
+        "Company": "Sunpath Solar Prospect",
+        "lastName": "={{ $('Normalize Enquiry').item.json.fullName }}",
+        "additionalFields": {
+          "Description": "=Grade: {{ $(\"Qualify Lead\").item.json.output.grade }}\nEst. system size: {{ $(\"Qualify Lead\").item.json.output.estimated_system_size_kw }} kW\nEst. annual saving: ${{ $(\"Qualify Lead\").item.json.output.estimated_annual_savings_aud }}\nProperty: {{ $(\"Normalize Enquiry\").item.json.propertyType }} in {{ $(\"Normalize Enquiry\").item.json.suburb }}\nQuarterly bill: {{ $(\"Normalize Enquiry\").item.json.billBand }}\n\n{{ $(\"Qualify Lead\").item.json.output.summary }}",
+          "Email": "={{ $('Normalize Enquiry').item.json.email }}",
+          "Lead_Source": "Website Enquiry",
+          "Lead_Status": "Qualified",
+          "Phone": "={{ $('Normalize Enquiry').item.json.phone }}"
+        }
+      }
+    },
+    {
+      "id": "9a40e900-8865-5cb8-9e5e-12e22554b459",
+      "name": "Book Site Assessment",
+      "type": "n8n-nodes-base.googleCalendar",
+      "typeVersion": 1.3,
+      "position": [
+        1280,
+        128
+      ],
+      "parameters": {
+        "calendar": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_CALENDAR_ID",
+          "cachedResultName": "YOUR_CALENDAR_ID"
+        },
+        "start": "={{ $now.plus(1, \"day\").set({ hour: 10, minute: 0, second: 0, millisecond: 0 }).toISO() }}",
+        "end": "={{ $now.plus(1, \"day\").set({ hour: 10, minute: 30, second: 0, millisecond: 0 }).toISO() }}",
+        "additionalFields": {
+          "description": "=Grade: {{ $(\"Qualify Lead\").item.json.output.grade }} | Est. {{ $(\"Qualify Lead\").item.json.output.estimated_system_size_kw }} kW, ${{ $(\"Qualify Lead\").item.json.output.estimated_annual_savings_aud }} a year\nProperty: {{ $(\"Normalize Enquiry\").item.json.propertyType }}\nQuarterly bill: {{ $(\"Normalize Enquiry\").item.json.billBand }}\n\n{{ $(\"Qualify Lead\").item.json.output.summary }}",
+          "summary": "=Site assessment - {{ $(\"Normalize Enquiry\").item.json.fullName }} ({{ $(\"Normalize Enquiry\").item.json.suburb }})"
+        }
+      }
+    },
+    {
+      "id": "ee53c2e6-6c44-5b55-ba85-354c507e3562",
+      "name": "Draft Reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1552,
+        128
+      ],
+      "parameters": {
+        "resource": "draft",
+        "subject": "Your Sunpath solar enquiry - next steps",
+        "message": "={{ $(\"Qualify Lead\").item.json.output.draft_email }}\n\nWe have pencilled in a site assessment for {{ DateTime.fromISO($(\"Book Site Assessment\").item.json.start.dateTime).setLocale(\"en\").toFormat(\"cccc d LLLL, h:mm a\") }}. Reply to confirm.\n\nSunpath Solar & Electrical",
+        "options": {
+          "sendTo": "={{ $('Normalize Enquiry').item.json.email }}"
+        }
+      }
+    },
+    {
+      "id": "966cb651-4afe-51a2-a26a-d2b28febcca7",
+      "name": "Alert Team",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        1808,
+        128
+      ],
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_SLACK_CHANNEL_ID",
+          "cachedResultName": "sales-deals"
+        },
+        "text": "=🔥 New QUALIFIED solar lead\n*{{ $(\"Normalize Enquiry\").item.json.fullName }}* - {{ $(\"Normalize Enquiry\").item.json.propertyType }} in {{ $(\"Normalize Enquiry\").item.json.suburb }}\nQuarterly bill: {{ $(\"Normalize Enquiry\").item.json.billBand }}\nGrade: {{ $(\"Qualify Lead\").item.json.output.grade }}  |  Est. {{ $(\"Qualify Lead\").item.json.output.estimated_system_size_kw }} kW  |  Est. saving ${{ $(\"Qualify Lead\").item.json.output.estimated_annual_savings_aud }} a year\n{{ $(\"Qualify Lead\").item.json.output.summary }}\n📅 Site assessment booked {{ DateTime.fromISO($(\"Book Site Assessment\").item.json.start.dateTime).setLocale(\"en\").toFormat(\"ccc d LLL h:mm a\") }}  ·  ✉️ Reply drafted in Gmail",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "30f2bd9f-4dbd-5e17-b41a-259c4045db8d",
+      "name": "Log Nurture Lead",
+      "type": "n8n-nodes-base.zohoCrm",
+      "typeVersion": 1,
+      "position": [
+        1024,
+        368
+      ],
+      "parameters": {
+        "resource": "lead",
+        "Company": "Sunpath Solar Prospect",
+        "lastName": "={{ $('Normalize Enquiry').item.json.fullName }}",
+        "additionalFields": {
+          "Description": "=Grade: cold (nurture)\nProperty: {{ $(\"Normalize Enquiry\").item.json.propertyType }} in {{ $(\"Normalize Enquiry\").item.json.suburb }}\nQuarterly bill: {{ $(\"Normalize Enquiry\").item.json.billBand }}\n\nReason: {{ $(\"Qualify Lead\").item.json.output.reasoning }}",
+          "Email": "={{ $('Normalize Enquiry').item.json.email }}",
+          "Lead_Source": "Website Enquiry",
+          "Lead_Status": "Not Qualified",
+          "Phone": "={{ $('Normalize Enquiry').item.json.phone }}"
+        }
+      }
+    },
+    {
+      "id": "81fd82b3-1428-53d1-b24e-b10c89d72f94",
+      "name": "Log Cold Lead",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        1280,
+        368
+      ],
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_SLACK_CHANNEL_ID",
+          "cachedResultName": "sales-deals"
+        },
+        "text": "=🧊 New cold / nurture enquiry\n*{{ $(\"Normalize Enquiry\").item.json.fullName }}* - {{ $(\"Normalize Enquiry\").item.json.propertyType }} in {{ $(\"Normalize Enquiry\").item.json.suburb }}\nQuarterly bill: {{ $(\"Normalize Enquiry\").item.json.billBand }}\nReason: {{ $(\"Qualify Lead\").item.json.output.reasoning }}\nNo assessment booked. Added to Zoho for nurture.",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "70b7872b-3681-5777-a392-eb9f1169eaa1",
+      "name": "Flag for Review",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.5,
+      "position": [
+        1024,
+        608
+      ],
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "YOUR_SLACK_CHANNEL_ID",
+          "cachedResultName": "sales-deals"
+        },
+        "text": "=⚠️ Enquiry needs manual review - no clear grade.\n*{{ $(\"Normalize Enquiry\").item.json.fullName }}* - {{ $(\"Normalize Enquiry\").item.json.email }}",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "bae4b494-6f49-51b6-99db-6d983c4c4b49",
+      "name": "Sticky Note 3ba1af42",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        0,
+        120
+      ],
+      "parameters": {
+        "content": "## 1. Capture + qualify\nThe enquiry comes in, gets normalised, then GPT grades it hot / warm / cold, estimates system size and annual saving, and drafts a reply.",
+        "height": 170,
+        "width": 440,
+        "color": 4
+      }
+    },
+    {
+      "id": "da7b7e0d-8e0e-5906-a4b4-9aeb5f1913e7",
+      "name": "Sticky Note 3bac57b6",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1024,
+        -80
+      ],
+      "parameters": {
+        "content": "## 2. Qualified -> act\nCreate the lead in the CRM, book the site assessment, draft the reply (human approves before sending), alert the team.",
+        "height": 170,
+        "width": 440,
+        "color": 3
+      }
+    },
+    {
+      "id": "3ffeb534-c44a-5910-9bff-3e495f35187f",
+      "name": "Sticky Note 8253261a",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1520,
+        330
+      ],
+      "parameters": {
+        "content": "## 3. Cold -> protect the team time\nLogged to the CRM for nurture and flagged in Slack. No assessment, no draft. The unclear case goes to manual review.",
+        "height": 170,
+        "width": 440,
+        "color": 5
+      }
+    }
+  ],
+  "connections": {
+    "Website Enquiry": {
+      "main": [
+        [
+          {
+            "node": "Normalize Enquiry",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Enquiry": {
+      "main": [
+        [
+          {
+            "node": "Qualify Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Qualify Lead": {
+      "main": [
+        [
+          {
+            "node": "Route by Grade",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT-5.4 mini": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Qualify Lead",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Lead Schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Qualify Lead",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Grade": {
+      "main": [
+        [
+          {
+            "node": "Create Solar Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Nurture Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Flag for Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Solar Lead": {
+      "main": [
+        [
+          {
+            "node": "Book Site Assessment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Book Site Assessment": {
+      "main": [
+        [
+          {
+            "node": "Draft Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Draft Reply": {
+      "main": [
+        [
+          {
+            "node": "Alert Team",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Nurture Lead": {
+      "main": [
+        [
+          {
+            "node": "Log Cold Lead",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

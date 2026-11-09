@@ -1,0 +1,631 @@
+{
+  "name": "AI Workpaper Reviewer for Accountants",
+  "nodes": [
+    {
+      "id": "aed1bef8-3fd7-5313-b993-9045f60ffc51",
+      "name": "Open Workpaper",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -400,
+        300
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "edc70815-713f-5330-8998-f77853f9a544",
+      "name": "Reset Verified Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -200,
+        300
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Verified"
+        },
+        "clear": "wholeSheet",
+        "keepFirstRow": false
+      }
+    },
+    {
+      "id": "26027f91-d97f-5811-89b7-987dadf88513",
+      "name": "Reset Client Queries Tab",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "clear",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Client Queries"
+        },
+        "clear": "wholeSheet",
+        "keepFirstRow": false
+      }
+    },
+    {
+      "id": "9a066d25-e924-5ea9-85a8-398681037a79",
+      "name": "Read Prior Year",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        200,
+        300
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Prior Year"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "d718aab8-682d-5a47-91aa-e6519c6d1477",
+      "name": "Read Ledger",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        400,
+        300
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Ledger"
+        },
+        "options": {}
+      },
+      "executeOnce": true
+    },
+    {
+      "id": "d33ebd02-b409-5ce4-b967-8e2af7d12edb",
+      "name": "Attach Prior Year",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        600,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const prior = {};\nfor (const p of $('Read Prior Year').all()) {\n  prior[p.json['Account']] = p.json['Prior Year Balance'];\n}\nreturn $input.all().map(it => {\n  const acct = it.json['Account'];\n  const pv = Object.prototype.hasOwnProperty.call(prior, acct) ? prior[acct] : 'n/a';\n  return { json: { Account: it.json['Account'], Description: it.json['Description'], Amount: it.json['Amount'], 'GST Code': it.json['GST Code'], priorYearBalance: pv } };\n});"
+      }
+    },
+    {
+      "id": "f5a9b923-b6d8-5f71-98f6-00edc6806d2e",
+      "name": "Review Each Line",
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        840,
+        300
+      ],
+      "parameters": {
+        "text": "=Account: {{ $json.Account }}\nDescription: {{ $json.Description }}\nAmount (AUD): {{ $json.Amount }}\nGST code as entered: {{ $json['GST Code'] }}\nPrior year balance for this account: {{ $json.priorYearBalance }}",
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{ \"status\": \"query\", \"issue_type\": \"Division 7A\", \"query_text\": \"Payment of $18,000 to the director loan account. Is a complying Division 7A loan agreement in place, or should this be treated as a deemed dividend?\", \"confidence\": 92, \"reason\": \"Payment to director, no prior year balance\" }",
+        "options": {
+          "systemPromptTemplate": "You are a senior Australian accountant reviewing one line of a client's general ledger at financial year end (year ended 30 June 2025). The client is a small Australian company (Pty Ltd). For the single ledger line provided, decide whether it can be verified as-is or whether it needs a query raised with the client before the accounts and tax return are finalised.\n\nApply Australian tax and accounting treatment:\n1. Division 7A: a payment, loan or drawing to a director or shareholder (often a director loan account, frequently coded N-T) must be queried. Without a complying Division 7A loan agreement it can be treated as a deemed dividend. Always raise this as a query.\n2. GST on GST-free supplies: ASIC fees, bank interest, government charges and residential rent are GST-free. If GST has been coded on one of these, query the GST treatment.\n3. Capital vs revenue: if a Repairs and Maintenance or similar expense line includes the purchase of equipment or an asset, query whether it should be capitalised and depreciated rather than expensed.\n4. Material variance: if the amount has moved materially against the prior year with no obvious explanation (roughly a doubling or more, or a large absolute swing), query it and ask for supporting detail.\n5. Entertainment and private use: entertainment is often non-deductible and may attract FBT. Note this in your reason, but you may still verify the line unless the amount is large or clearly personal.\n\nOutput rules:\n- status must be exactly \"verified\" or \"query\".\n- Set status to \"query\" for any line matching rules 1 to 4.\n- For clean lines that tie reasonably to the prior year and carry a sensible GST code, set status \"verified\", confidence 85 or higher, issue_type empty, query_text empty.\n- query_text must be a direct question to send the client, in a professional accountant's voice, referencing the dollar amount.\n- issue_type is a short label such as \"Division 7A\", \"GST on GST-free supply\", \"Capital vs revenue\", \"Material variance\", \"Entertainment\".\n- confidence is 0 to 100.\n- reason is one short line explaining the call.\n- Wages, superannuation and PAYG are payroll items, not Division 7A items; verify them if they look normal."
+        }
+      }
+    },
+    {
+      "id": "c04e0ba4-56bd-5fda-9107-89ce9280b917",
+      "name": "GPT-4.1 (Chat Completions)",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        700,
+        520
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "id",
+          "value": "gpt-4.1"
+        },
+        "responsesApiEnabled": false,
+        "options": {
+          "temperature": 0
+        }
+      }
+    },
+    {
+      "id": "f8e157e9-ab27-51d3-9e28-48e5e14ddfa9",
+      "name": "Needs a Query?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1040,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.output.status }}",
+              "rightValue": "query",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.output.confidence }}",
+              "rightValue": 80,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "or"
+        }
+      }
+    },
+    {
+      "id": "8e191511-9d15-5e1a-8950-664dd5b91f21",
+      "name": "Shape Query Row",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1260,
+        180
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "q1",
+              "name": "Account",
+              "value": "={{ $('Attach Prior Year').item.json.Account }}",
+              "type": "string"
+            },
+            {
+              "id": "q2",
+              "name": "Description",
+              "value": "={{ $('Attach Prior Year').item.json.Description }}",
+              "type": "string"
+            },
+            {
+              "id": "q3",
+              "name": "Amount",
+              "value": "={{ $('Attach Prior Year').item.json.Amount }}",
+              "type": "number"
+            },
+            {
+              "id": "q4",
+              "name": "Issue Type",
+              "value": "={{ $json.output.issue_type }}",
+              "type": "string"
+            },
+            {
+              "id": "q5",
+              "name": "Query",
+              "value": "={{ $json.output.query_text }}",
+              "type": "string"
+            },
+            {
+              "id": "q6",
+              "name": "Confidence",
+              "value": "={{ $json.output.confidence }}",
+              "type": "number"
+            },
+            {
+              "id": "q7",
+              "name": "Reason",
+              "value": "={{ $json.output.reason }}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "1c3633a7-63df-53e3-9c7e-57cb48616eb8",
+      "name": "Write to Client Queries",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1480,
+        180
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Client Queries"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Account",
+              "displayName": "Account",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Description",
+              "displayName": "Description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Amount",
+              "displayName": "Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Issue Type",
+              "displayName": "Issue Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Query",
+              "displayName": "Query",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confidence",
+              "displayName": "Confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Reason",
+              "displayName": "Reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "useAppend": true
+        }
+      }
+    },
+    {
+      "id": "58a23184-b189-5010-9483-eb81a037e545",
+      "name": "Shape Verified Row",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1260,
+        420
+      ],
+      "parameters": {
+        "mode": "manual",
+        "includeOtherFields": false,
+        "assignments": {
+          "assignments": [
+            {
+              "id": "v1",
+              "name": "Account",
+              "value": "={{ $('Attach Prior Year').item.json.Account }}",
+              "type": "string"
+            },
+            {
+              "id": "v2",
+              "name": "Description",
+              "value": "={{ $('Attach Prior Year').item.json.Description }}",
+              "type": "string"
+            },
+            {
+              "id": "v3",
+              "name": "Amount",
+              "value": "={{ $('Attach Prior Year').item.json.Amount }}",
+              "type": "number"
+            },
+            {
+              "id": "v4",
+              "name": "Confidence",
+              "value": "={{ $json.output.confidence }}",
+              "type": "number"
+            },
+            {
+              "id": "v5",
+              "name": "Reason",
+              "value": "={{ $json.output.reason }}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "8e0e046f-23ac-5d7f-8074-e0853bc2da9b",
+      "name": "Write to Verified",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1480,
+        420
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Verified"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Account",
+              "displayName": "Account",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Description",
+              "displayName": "Description",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Amount",
+              "displayName": "Amount",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confidence",
+              "displayName": "Confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Reason",
+              "displayName": "Reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "useAppend": true
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Open Workpaper": {
+      "main": [
+        [
+          {
+            "node": "Reset Verified Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reset Verified Tab": {
+      "main": [
+        [
+          {
+            "node": "Reset Client Queries Tab",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reset Client Queries Tab": {
+      "main": [
+        [
+          {
+            "node": "Read Prior Year",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Prior Year": {
+      "main": [
+        [
+          {
+            "node": "Read Ledger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Ledger": {
+      "main": [
+        [
+          {
+            "node": "Attach Prior Year",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Attach Prior Year": {
+      "main": [
+        [
+          {
+            "node": "Review Each Line",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review Each Line": {
+      "main": [
+        [
+          {
+            "node": "Needs a Query?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GPT-4.1 (Chat Completions)": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Review Each Line",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs a Query?": {
+      "main": [
+        [
+          {
+            "node": "Shape Query Row",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Shape Verified Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Query Row": {
+      "main": [
+        [
+          {
+            "node": "Write to Client Queries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Shape Verified Row": {
+      "main": [
+        [
+          {
+            "node": "Write to Verified",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

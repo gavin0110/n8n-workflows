@@ -1,0 +1,979 @@
+{
+  "name": "Kettleford Fitness Stock Cover & Reorder Alerts",
+  "nodes": [
+    {
+      "id": "da54b949-2e26-5664-b6b3-7edf1fbee4bb",
+      "name": "Order Lands In Shopify",
+      "type": "n8n-nodes-base.shopifyTrigger",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        -80
+      ],
+      "parameters": {
+        "authentication": "accessToken",
+        "topic": "orders/create"
+      }
+    },
+    {
+      "id": "4296bbcb-97fe-5324-b610-602930134575",
+      "name": "Run The Check Now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -460,
+        120
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "da8140f7-e0df-5a4a-8e41-12a4920b234a",
+      "name": "Read Incoming Deliveries",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "executeOnce": true,
+      "position": [
+        160,
+        0
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Incoming"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "6a3186d6-bffd-5a80-b35e-8a7ce6cee02b",
+      "name": "Read Alerts Already Sent",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "position": [
+        360,
+        0
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "read",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Alerts"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "3b73187c-7a71-542b-ac80-7fa94996cc00",
+      "name": "Work Out Cover",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        560,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const DAYS = 30;\nconst now = new Date();\nconst cutoff30 = new Date(now.getTime() - DAYS * 86400000);\nconst cutoff7 = new Date(now.getTime() - 7 * 86400000);\nconst oresp = $('Read 30 Days Of Orders').first().json || {};\nconst orders = ((oresp.data || {}).orders || {}).nodes || [];\nconst presp = $('Read Products And Stock').first().json || {};\nconst variants = ((presp.data || {}).productVariants || {}).nodes || [];\nconst incoming = $('Read Incoming Deliveries').all().map(i => i.json);\nconst alerts = $input.all().map(i => i.json).filter(a => a && a.SKU);\n\nconst bySku = {};\nfor (const v of variants) {\n  if (!v.sku) continue;\n  bySku[v.sku] = { sku: v.sku, product: String((v.product || {}).title || ''), on_hand: Number(v.inventoryQuantity || 0), price: Number(v.price || 0), sold_30d: 0, sold_7d: 0, revenue_30d: 0 };\n}\nlet orders30 = 0;\nlet revenue30 = 0;\nfor (const o of orders) {\n  if (o.cancelledAt) continue;\n  const t = new Date(o.processedAt);\n  if (isNaN(t.getTime()) || t < cutoff30) continue;\n  orders30 += 1;\n  revenue30 += Number((((o.currentTotalPriceSet || {}).shopMoney || {}).amount) || 0);\n  for (const li of (((o.lineItems || {}).nodes) || [])) {\n    const r = bySku[li.sku];\n    if (!r) continue;\n    const q = Number(li.quantity || 0);\n    const unit = Number((((li.originalUnitPriceSet || {}).shopMoney || {}).amount) || r.price);\n    r.sold_30d += q;\n    r.revenue_30d += q * unit;\n    if (t >= cutoff7) r.sold_7d += q;\n  }\n}\nconst inc = {};\nfor (const row of incoming) {\n  const sku = String(row.SKU || '').trim();\n  if (!sku) continue;\n  inc[sku] = { units: Number(row.Units || 0), due: Number(row['Due in (days)'] || 0) };\n}\nconst today = now.toISOString().slice(0, 10);\nconst alertedToday = new Set(alerts.filter(a => String(a.Date || '').slice(0, 10) === today).map(a => String(a.SKU)));\n\nconst out = [];\nfor (const r of Object.values(bySku)) {\n  const per_day = r.sold_30d / DAYS;\n  const per_day7 = r.sold_7d / 7;\n  const cover = per_day > 0 ? r.on_hand / per_day : (r.on_hand > 0 ? 9999 : 0);\n  const d = inc[r.sku];\n  let status = 'OK';\n  let needs = false;\n  if (r.on_hand < 0) {\n    status = 'Preorder: ' + (-r.on_hand) + ' committed' + (d ? ', ' + (d.units + r.on_hand) + ' free on arrival' : ', no delivery booked');\n  } else if (d && cover < d.due) {\n    const gap = Math.round(d.due - cover); status = 'REORDER: runs out ' + gap + (gap === 1 ? ' day' : ' days') + ' before the delivery';\n    needs = true;\n  } else if (!d && cover < 21) {\n    status = 'REORDER: no delivery booked';\n    needs = true;\n  } else if (cover > 120) {\n    status = 'Slow mover';\n  } else if (per_day > 0 && per_day7 > 1.5 * per_day) {\n    status = 'Picking up';\n  } else if (d && cover - d.due < 3) {\n    status = 'OK, tight';\n  }\n  const pace = per_day > 0 ? per_day7 / per_day : 0;\n  let read = 'Steady';\n  if (r.on_hand < 0) read = 'Preorder demand';\n  else if (cover > 120) read = 'Slow, ' + r.on_hand + ' on the shelf';\n  else if (pace >= 1.5) read = 'Taking off';\n  else if (pace <= 0.6 && r.sold_30d >= 10) read = 'Fading';\n  out.push({ json: {\n    sku: r.sku, product: r.product, on_hand: r.on_hand,\n    sold_30d: r.sold_30d, sold_7d: r.sold_7d,\n    per_day: Number(per_day.toFixed(1)), per_day_7d: Number(per_day7.toFixed(1)),\n    days_of_cover: cover >= 9999 ? '' : Math.round(cover),\n    cover_at_recent_pace: per_day7 > 0 ? Math.round(r.on_hand / per_day7) : '',\n    incoming: d ? d.units : '', due_in: d ? d.due + ' days' : '', due_days: d ? d.due : '',\n    status, needs_alert: needs, alerted_today: alertedToday.has(r.sku),\n    pace: pace ? pace.toFixed(1) + 'x' : '', revenue_30d: Math.round(r.revenue_30d), read,\n    orders_30d: orders30, revenue_30d_total: Math.round(revenue30)\n  } });\n}\nout.sort((a, b) => b.json.sold_30d - a.json.sold_30d);\nreturn out;"
+      }
+    },
+    {
+      "id": "0f6fbef5-0d5a-5969-b35b-88304b877312",
+      "name": "Update The Stock Cover Board",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        780,
+        0
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Stock Cover"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "SKU"
+          ],
+          "value": {
+            "SKU": "={{ $json.sku }}",
+            "Product": "={{ $json.product }}",
+            "On hand": "={{ $json.on_hand }}",
+            "Sold 30d": "={{ $json.sold_30d }}",
+            "Per day": "={{ $json.per_day }}",
+            "Days of cover": "={{ $json.days_of_cover }}",
+            "Incoming": "={{ $json.incoming }}",
+            "Due in": "={{ $json.due_in }}",
+            "Status": "={{ $json.status }}"
+          },
+          "schema": [
+            {
+              "id": "SKU",
+              "displayName": "SKU",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Product",
+              "displayName": "Product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "On hand",
+              "displayName": "On hand",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Sold 30d",
+              "displayName": "Sold 30d",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Per day",
+              "displayName": "Per day",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Days of cover",
+              "displayName": "Days of cover",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Incoming",
+              "displayName": "Incoming",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Due in",
+              "displayName": "Due in",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "9560c8b0-9d86-55da-8b24-30bcd9c18cdc",
+      "name": "Update The Sales Velocity Board",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1000,
+        0
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Sales Velocity"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "SKU"
+          ],
+          "value": {
+            "SKU": "={{ $(\"Work Out Cover\").item.json.sku }}",
+            "Product": "={{ $(\"Work Out Cover\").item.json.product }}",
+            "Units 30d": "={{ $(\"Work Out Cover\").item.json.sold_30d }}",
+            "Last 7 days": "={{ $(\"Work Out Cover\").item.json.sold_7d }}",
+            "Pace vs 30d": "={{ $(\"Work Out Cover\").item.json.pace }}",
+            "Revenue 30d": "={{ \"$\" + Number($(\"Work Out Cover\").item.json.revenue_30d).toLocaleString(\"en-US\") }}",
+            "Read": "={{ $(\"Work Out Cover\").item.json.read }}"
+          },
+          "schema": [
+            {
+              "id": "SKU",
+              "displayName": "SKU",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Product",
+              "displayName": "Product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Units 30d",
+              "displayName": "Units 30d",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Last 7 days",
+              "displayName": "Last 7 days",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Pace vs 30d",
+              "displayName": "Pace vs 30d",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Revenue 30d",
+              "displayName": "Revenue 30d",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Read",
+              "displayName": "Read",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "847905ea-7adb-54c7-a207-2f21972586cd",
+      "name": "Refresh The KPIs",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1220,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const rows = $('Work Out Cover').all().map(i => i.json);\nconst n = rows.length;\nconst reorder = rows.filter(r => r.needs_alert).length;\nconst slow = rows.filter(r => r.status === 'Slow mover').length;\nconst pick = rows.filter(r => r.status === 'Picking up').length;\nconst orders = rows.length ? rows[0].orders_30d : 0;\nconst rev = rows.length ? rows[0].revenue_30d_total : 0;\nconst units = rows.reduce((s, r) => s + r.sold_30d, 0);\nconst money = v => '$' + Math.round(v).toLocaleString('en-US');\nconst hot = rows.filter(r => r.needs_alert).map(r => r.product.split(' (')[0]);\nreturn [\n  { json: { label: 'Revenue, last 30 days', value: money(rev), sub: 'Shopify · ' + orders + ' orders', trend: 'up', at_risk: '' } },\n  { json: { label: 'Orders, last 30 days', value: String(orders), sub: (orders / 30).toFixed(1) + ' a day · ' + (units / 30).toFixed(1) + ' units a day', trend: 'up', at_risk: '' } },\n  { json: { label: 'SKUs needing a reorder', value: reorder + ' of ' + n, sub: reorder ? hot.join(', ') : slow + ' slow movers · ' + pick + ' picking up', trend: reorder ? 'up' : 'flat', at_risk: reorder ? 'TRUE' : '' } }\n];"
+      }
+    },
+    {
+      "id": "0ec3aeb8-3202-5e81-b9c4-069248318e7e",
+      "name": "Update The KPI Band",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1440,
+        0
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "KPIs"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "label"
+          ],
+          "value": {
+            "label": "={{ $json.label }}",
+            "value": "={{ $json.value }}",
+            "sub": "={{ $json.sub }}",
+            "trend": "={{ $json.trend }}",
+            "at_risk": "={{ $json.at_risk }}"
+          },
+          "schema": [
+            {
+              "id": "label",
+              "displayName": "label",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "value",
+              "displayName": "value",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "sub",
+              "displayName": "sub",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "trend",
+              "displayName": "trend",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "at_risk",
+              "displayName": "at_risk",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "f8375321-4519-5ced-8b9e-312cd9663c1f",
+      "name": "Refresh The Card Headlines",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1660,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const rows = $('Work Out Cover').all().map(i => i.json);\nconst n = rows.length;\nconst reorder = rows.filter(r => r.needs_alert);\nconst top = rows.find(r => r.status === 'Picking up' || r.read === 'Taking off');\nconst rev = rows.length ? rows[0].revenue_30d_total : 0;\nconst units = rows.reduce((s, r) => s + r.sold_30d, 0);\nconst money = v => '$' + Math.round(v).toLocaleString('en-US');\nconst short = p => String(p).split(' (')[0];\nlet h1 = reorder.length + ' of ' + n + ' SKUs need a reorder';\nif (reorder.length) h1 += ' · ' + reorder.map(r => short(r.product)).join(', ');\nelse if (top) h1 += ' · ' + short(top.product) + ' picking up';\nlet h2 = money(rev) + ' · ' + units + ' units';\nif (top) h2 += ' · ' + short(top.product) + ' at ' + top.pace + ' its usual pace';\nreturn [\n  { json: { n: 1, headline: h1 } },\n  { json: { n: 2, headline: h2 } }\n];"
+      }
+    },
+    {
+      "id": "74d7eee4-ce81-58ac-917f-53bc11b195c4",
+      "name": "Update The Card Headlines",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1880,
+        0
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Modules"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "matchingColumns": [
+            "n"
+          ],
+          "value": {
+            "n": "={{ $json.n }}",
+            "headline": "={{ $json.headline }}"
+          },
+          "schema": [
+            {
+              "id": "n",
+              "displayName": "n",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "headline",
+              "displayName": "headline",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "138f4096-f3d0-5d08-9278-6076d3dc1e6b",
+      "name": "Needs An Alert",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [
+        780,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.needs_alert }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            },
+            {
+              "id": "c2",
+              "leftValue": "={{ $json.alerted_today }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "false",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      }
+    },
+    {
+      "id": "b9153f68-dc6f-5aab-85b6-9a3d02eaa936",
+      "name": "Write The Alert",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        1000,
+        300
+      ],
+      "parameters": {
+        "promptType": "define",
+        "text": "=Product: {{ $json.product }} (SKU {{ $json.sku }})\nOn hand now: {{ $json.on_hand }} units\nSold in the last 30 days: {{ $json.sold_30d }} units, {{ $json.per_day }} a day\nSold in the last 7 days: {{ $json.sold_7d }} units, {{ $json.per_day_7d }} a day\nDays of cover at the 30 day pace: {{ $json.days_of_cover }}\nDays of cover at the last 7 days pace: {{ $json.cover_at_recent_pace }}\nNext delivery: {{ $json.incoming }} units, due in {{ $json.due_days }} days",
+        "messages": {
+          "messageValues": [
+            {
+              "type": "SystemMessagePromptTemplate",
+              "message": "You write stock alerts for the owner of Kettleford Fitness, a family-owned fitness equipment brand. You are given the numbers for one product. Use ONLY those numbers, never add a figure that is not in them. Write three short lines in plain English and nothing else. Line 1: what is happening with this product, in one sentence. Line 2: how many days before the delivery it runs out, at the 30 day pace and at the last 7 days pace. Line 3: one move the owner could make today, starting with the word Suggested. No greeting, no sign-off, no bullet characters, no asterisks, no markdown, no em dashes. Under 75 words in total."
+            }
+          ]
+        },
+        "batching": {}
+      }
+    },
+    {
+      "id": "2cd34fc4-4eaf-5dd6-ba64-44cf734b3153",
+      "name": "Claude Sonnet 5",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.6,
+      "position": [
+        1020,
+        500
+      ],
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-5",
+          "cachedResultName": "Claude Sonnet 5"
+        },
+        "options": {
+          "maxTokensToSample": 400
+        }
+      }
+    },
+    {
+      "id": "6cf22df3-98bc-5d5f-a192-4e1f5169b9fa",
+      "name": "Alert The Owner In Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        1240,
+        300
+      ],
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SLACK_CHANNEL_ID"
+        },
+        "messageType": "text",
+        "text": "=:rotating_light: *Stock alert: {{ $(\"Needs An Alert\").item.json.product }}*\n{{ $json.text }}\n_On hand {{ $(\"Needs An Alert\").item.json.on_hand }} · {{ $(\"Needs An Alert\").item.json.per_day }} a day · {{ $(\"Needs An Alert\").item.json.days_of_cover }} days of cover · {{ $(\"Needs An Alert\").item.json.incoming }} due in {{ $(\"Needs An Alert\").item.json.due_days }} days_",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      }
+    },
+    {
+      "id": "d30490c2-aa5b-520b-aacf-9f43039f271f",
+      "name": "Log The Alert",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1460,
+        300
+      ],
+      "parameters": {
+        "resource": "sheet",
+        "operation": "append",
+        "authentication": "oAuth2",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Alerts"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $now.toISO() }}",
+            "SKU": "={{ $(\"Needs An Alert\").item.json.sku }}",
+            "Product": "={{ $(\"Needs An Alert\").item.json.product }}",
+            "Message": "={{ $(\"Write The Alert\").item.json.text }}",
+            "Sent to": "#kettleford-ops-alerts"
+          },
+          "schema": [
+            {
+              "id": "Date",
+              "displayName": "Date",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "SKU",
+              "displayName": "SKU",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Product",
+              "displayName": "Product",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Message",
+              "displayName": "Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Sent to",
+              "displayName": "Sent to",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "900e32f5-1de3-507f-a4e6-7decdd06a1df",
+      "name": "Sticky Note 50220993",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -240,
+        -240
+      ],
+      "parameters": {
+        "content": "## 1. Read the business\nAn order landing in Shopify (or the manual run) re-reads 30 days of orders, current stock, the deliveries on their way, and which alerts already went out today.",
+        "color": 4,
+        "width": 440,
+        "height": 170
+      }
+    },
+    {
+      "id": "cdb2d140-569c-5e61-9201-550a3822955c",
+      "name": "Sticky Note 401d7ebb",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        560,
+        -240
+      ],
+      "parameters": {
+        "content": "## 2. Work it out, write it down\nVelocity, days of cover and status per product, written to the operations sheet. The KPI band and card headlines refresh from the same numbers.",
+        "color": 3,
+        "width": 440,
+        "height": 170
+      }
+    },
+    {
+      "id": "debacfbc-02f9-528e-a3bb-036b0fdd78bc",
+      "name": "Sticky Note fea7efea",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1240,
+        440
+      ],
+      "parameters": {
+        "content": "## 3. Alert only when it matters\nA product that will run out before its delivery lands gets one Slack alert, with the numbers and one suggested move. Already alerted today means silence. Nothing here places an order.",
+        "color": 5,
+        "width": 440,
+        "height": 170
+      }
+    },
+    {
+      "id": "b5a262ec-cada-5e5b-ad1f-2f4b2ffe7304",
+      "name": "Read 30 Days Of Orders",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -240,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-store.myshopify.com/admin/api/2025-07/graphql.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: \"{ orders(first: 250, query: \\\"processed_at:>=\" + $now.minus(31, 'days').toFormat('yyyy-MM-dd') + \"\\\", sortKey: PROCESSED_AT, reverse: true) { nodes { id name processedAt cancelledAt currentTotalPriceSet { shopMoney { amount } } lineItems(first: 20) { nodes { sku quantity originalUnitPriceSet { shopMoney { amount } } } } } } }\" }) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "9610001a-a486-523b-a5e5-3a955239fb23",
+      "name": "Read Products And Stock",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        -40,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-store.myshopify.com/admin/api/2025-07/graphql.json",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\"query\": \"{ productVariants(first: 100) { nodes { id sku price inventoryQuantity product { title } } } }\"}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Read Incoming Deliveries": {
+      "main": [
+        [
+          {
+            "node": "Read Alerts Already Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Alerts Already Sent": {
+      "main": [
+        [
+          {
+            "node": "Work Out Cover",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Work Out Cover": {
+      "main": [
+        [
+          {
+            "node": "Update The Stock Cover Board",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Needs An Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update The Stock Cover Board": {
+      "main": [
+        [
+          {
+            "node": "Update The Sales Velocity Board",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update The Sales Velocity Board": {
+      "main": [
+        [
+          {
+            "node": "Refresh The KPIs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh The KPIs": {
+      "main": [
+        [
+          {
+            "node": "Update The KPI Band",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update The KPI Band": {
+      "main": [
+        [
+          {
+            "node": "Refresh The Card Headlines",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Refresh The Card Headlines": {
+      "main": [
+        [
+          {
+            "node": "Update The Card Headlines",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs An Alert": {
+      "main": [
+        [
+          {
+            "node": "Write The Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Write The Alert": {
+      "main": [
+        [
+          {
+            "node": "Alert The Owner In Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Sonnet 5": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Write The Alert",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert The Owner In Slack": {
+      "main": [
+        [
+          {
+            "node": "Log The Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Order Lands In Shopify": {
+      "main": [
+        [
+          {
+            "node": "Read 30 Days Of Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run The Check Now": {
+      "main": [
+        [
+          {
+            "node": "Read 30 Days Of Orders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read 30 Days Of Orders": {
+      "main": [
+        [
+          {
+            "node": "Read Products And Stock",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Products And Stock": {
+      "main": [
+        [
+          {
+            "node": "Read Incoming Deliveries",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

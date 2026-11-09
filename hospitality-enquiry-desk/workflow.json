@@ -1,0 +1,691 @@
+{
+  "name": "Redlands Hospitality Enquiry Desk",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "cded8dbd-5f14-56f4-b961-39bee5b3ce90",
+      "name": "Run The Desk Now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "limit": 6,
+        "simple": false,
+        "filters": {
+          "q": "to:you@example.com",
+          "readStatus": "both"
+        },
+        "options": {
+          "downloadAttachments": false
+        }
+      },
+      "id": "ea97b396-7797-5461-a153-f217ce237eca",
+      "name": "Read The Inbox",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "n1",
+              "name": "subject",
+              "value": "={{ $json.subject ?? $json.Subject ?? \"(no subject)\" }}",
+              "type": "string"
+            },
+            {
+              "id": "n2",
+              "name": "sender",
+              "value": "={{ ($json.from && $json.from.value && $json.from.value[0]) ? $json.from.value[0].name : (($json.From && $json.From.value && $json.From.value[0]) ? $json.From.value[0].name : \"\") }}",
+              "type": "string"
+            },
+            {
+              "id": "n3",
+              "name": "body",
+              "value": "={{ $json.text ?? $json.snippet ?? \"\" }}",
+              "type": "string"
+            },
+            {
+              "id": "n4",
+              "name": "messageId",
+              "value": "={{ $json.id }}",
+              "type": "string"
+            },
+            {
+              "id": "n5",
+              "name": "threadId",
+              "value": "={{ $json.threadId }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5672c269-84c8-5664-961a-bad092006893",
+      "name": "Normalise The Email",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        448,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyHour"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "to:you@example.com",
+          "readStatus": "both"
+        },
+        "options": {
+          "downloadAttachments": false
+        }
+      },
+      "id": "7bb5252e-ceed-5a63-8d86-3a7c5b3964aa",
+      "name": "Enquiry Arrives",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        224,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "text": "=From: {{ $json.sender }}\nSubject: {{ $json.subject }}\n\n{{ $json.body }}",
+        "attributes": {
+          "attributes": [
+            {
+              "name": "venue",
+              "description": "Exactly one of: Redlands Kitchen, The Farrier, Bar Lumen, Not stated. The venue this message is about.",
+              "required": true
+            },
+            {
+              "name": "category",
+              "description": "Exactly one of: Table booking, Private event, Feedback, Supplier or admin, Job application, Marketing or newsletter",
+              "required": true
+            },
+            {
+              "name": "guest_name",
+              "description": "The name of the person who wrote this, as they signed it. Empty string if nobody signed it.",
+              "required": true
+            },
+            {
+              "name": "guest_email",
+              "description": "The email address written in the body of the message. Empty string if the body does not contain one. Never guess an address from a name.",
+              "required": true
+            },
+            {
+              "name": "summary",
+              "description": "One plain sentence saying what this message wants. No more than 12 words.",
+              "required": true
+            },
+            {
+              "name": "sentiment",
+              "description": "Exactly one of: Positive, Neutral, Negative. Negative only when the person is telling you something went wrong.",
+              "required": true
+            },
+            {
+              "name": "is_guest",
+              "type": "boolean",
+              "description": "True only for Table booking, Private event and Feedback. A supplier invoice, a job application and any marketing email are false, even when they name one of the venues.",
+              "required": true
+            },
+            {
+              "name": "reason",
+              "description": "Eight words at most, naming the one fact that decided it. Write it as a plain noun phrase. Never restate the rule you were given and never say anything about a date being near or far.",
+              "required": true
+            },
+            {
+              "name": "confidence",
+              "type": "number",
+              "description": "Between 0 and 1, how certain the category is.",
+              "required": true
+            },
+            {
+              "name": "draft_reply",
+              "description": "The reply body when is_guest is true. Empty string when it is false.",
+              "required": true
+            }
+          ]
+        },
+        "options": {
+          "systemPromptTemplate": "You sort the enquiries inbox for Redlands Hospitality, a small restaurant group running three venues: Redlands Kitchen, The Farrier and Bar Lumen. You also draft the replies a person approves before anything sends.\n\nSort first, then draft. A supplier invoice is filed, not answered. A job application goes to whoever is hiring, not into a guest reply. Anything sent to a mailing list is logged and ignored. Only a real guest gets a draft.\n\nA message can name one of the venues without being from a guest. A job application that mentions Bar Lumen is still a job application.\n\nWhen you draft, write the way a busy restaurant manager writes. Answer what was asked, name a next step, and stop. Five sentences at most. Contractions are fine.\n\nNever invent a price, a table, a date or an availability that is not already in their message. Never add a currency symbol, a unit, or any other detail the message does not contain: if an amount is written without a currency, write it without a currency. When the answer needs something nobody has given you, say a person will confirm it rather than making one up. You do not know today's date, so never say anything about how soon or far away a date is.\n\nWhen someone tells you something went wrong, do not offer them anything. Acknowledge it, say it is being looked into, and say a person will come back to them.\n\nBanned outright: em dashes, \"I hope this finds you well\", \"reaching out\", \"touch base\", \"circle back\", \"at your earliest convenience\", \"please do not hesitate\", \"we are excited to\", \"delighted\", \"valued customer\", \"apologise for any inconvenience\", \"leverage\", \"streamline\", \"seamless\". Do not restate their question back at them before answering it.\n\nSign off as Redlands Hospitality."
+        }
+      },
+      "id": "82eea950-f65e-5aa9-b69c-5280881a3606",
+      "name": "Read It And Decide",
+      "type": "@n8n/n8n-nodes-langchain.informationExtractor",
+      "typeVersion": 1.2,
+      "position": [
+        672,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "claude-sonnet-4-6",
+          "cachedResultName": "Claude Sonnet 4.6"
+        },
+        "options": {
+          "maxTokensToSample": 2000
+        }
+      },
+      "id": "eb1cd627-0cd7-5f55-95e7-7ebf2e456f6e",
+      "name": "Claude Sonnet 4.6",
+      "type": "@n8n/n8n-nodes-langchain.lmChatAnthropic",
+      "typeVersion": 1.5,
+      "position": [
+        744,
+        312
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Register"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Received": "={{ $now.setZone(\"Australia/Sydney\").toFormat(\"yyyy-MM-dd HH:mm\") }}",
+            "Venue": "={{ $json.output.venue }}",
+            "From": "={{ $json.output.guest_name }}",
+            "Type": "={{ $json.output.category }}",
+            "Summary": "={{ $json.output.summary }}",
+            "Sentiment": "={{ $json.output.sentiment }}",
+            "Decision": "={{ $json.output.is_guest ? ($json.output.sentiment === \"Negative\" ? \"Ticket opened, manager alerted\" : \"Guest record updated, reply drafted\") : \"Logged only, no CRM record\" }}",
+            "Reason": "={{ $json.output.reason }}",
+            "Confidence": "={{ $json.output.confidence }}"
+          },
+          "schema": [
+            {
+              "id": "Received",
+              "displayName": "Received",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Venue",
+              "displayName": "Venue",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "From",
+              "displayName": "From",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Type",
+              "displayName": "Type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Summary",
+              "displayName": "Summary",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Sentiment",
+              "displayName": "Sentiment",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Decision",
+              "displayName": "Decision",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Reason",
+              "displayName": "Reason",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Confidence",
+              "displayName": "Confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ]
+        },
+        "options": {
+          "cellFormat": "USER_ENTERED"
+        }
+      },
+      "id": "f2720492-78dc-5fc4-b4f2-a2593f1764b9",
+      "name": "Log To The Register",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1024,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $(\"Read It And Decide\").item.json.output.is_guest }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "2a06e783-5f7b-513b-b1f7-34c77020debb",
+      "name": "Is This A Guest",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1248,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "email": "={{ $(\"Read It And Decide\").item.json.output.guest_email }}",
+        "additionalFields": {
+          "firstName": "={{ $(\"Read It And Decide\").item.json.output.guest_name ? $(\"Read It And Decide\").item.json.output.guest_name.split(\" \")[0] : \"\" }}",
+          "lastName": "={{ $(\"Read It And Decide\").item.json.output.guest_name ? $(\"Read It And Decide\").item.json.output.guest_name.split(\" \").slice(1).join(\" \") : \"\" }}",
+          "message": "={{ $(\"Read It And Decide\").item.json.output.venue }}: {{ $(\"Read It And Decide\").item.json.output.summary }}"
+        },
+        "options": {}
+      },
+      "id": "eeeb4f36-b8ad-5dfb-b84a-b0ce36e4059a",
+      "name": "Add Or Update The Guest",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        1472,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $(\"Read It And Decide\").item.json.output.sentiment }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "rightValue": "Negative"
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "245b4e48-1bf9-5b92-9aeb-bb15e4291112",
+      "name": "Is Something Wrong",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1696,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "resource": "ticket",
+        "pipelineId": "0",
+        "stageId": "1",
+        "ticketName": "={{ $(\"Read It And Decide\").item.json.output.venue }} - {{ $(\"Read It And Decide\").item.json.output.summary }}",
+        "additionalFields": {
+          "associatedContactIds": [
+            "={{ $(\"Add Or Update The Guest\").item.json.vid }}"
+          ],
+          "description": "={{ $(\"Normalise The Email\").item.json.body }}"
+        }
+      },
+      "id": "7423a043-763d-5096-9318-912cfa98ee53",
+      "name": "Open A Ticket",
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        1920,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SLACK_CHANNEL_ID",
+          "cachedResultName": "redlands-ops"
+        },
+        "text": "=*{{ $(\"Read It And Decide\").item.json.output.venue }} needs a manager*\n\n*Guest:* {{ $(\"Read It And Decide\").item.json.output.guest_name }}\n*What happened:* {{ $(\"Read It And Decide\").item.json.output.summary }}\n\nA ticket is open in HubSpot. The reply is drafted and waiting for approval.",
+        "otherOptions": {
+          "includeLinkToWorkflow": false,
+          "mrkdwn": true
+        }
+      },
+      "id": "8482a79c-e020-5a82-b26d-8cbd8c7f408c",
+      "name": "Alert The Venue Manager",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        2144,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "=Re: {{ $(\"Normalise The Email\").item.json.subject }}",
+        "message": "={{ $(\"Read It And Decide\").item.json.output.draft_reply }}",
+        "options": {
+          "threadId": "={{ $(\"Normalise The Email\").item.json.threadId }}",
+          "sendTo": "={{ $(\"Read It And Decide\").item.json.output.guest_email }}"
+        }
+      },
+      "id": "bda68234-f3f2-5489-a1aa-2c8d18f6b9dd",
+      "name": "Draft The Reply",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        2368,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_SLACK_CHANNEL_ID",
+          "cachedResultName": "redlands-ops"
+        },
+        "text": "=*{{ $(\"Read It And Decide\").item.json.output.venue }}* - {{ $(\"Read It And Decide\").item.json.output.category }}\n\n*Guest:* {{ $(\"Read It And Decide\").item.json.output.guest_name }}\n*Wants:* {{ $(\"Read It And Decide\").item.json.output.summary }}\n\nThe reply is drafted and waiting for approval.",
+        "otherOptions": {
+          "includeLinkToWorkflow": false,
+          "mrkdwn": true
+        }
+      },
+      "id": "f3c4d232-7f63-59c7-ae0d-5d7428a7790c",
+      "name": "Tell The Venue",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.7,
+      "position": [
+        2144,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f1",
+              "name": "outcome",
+              "value": "=Logged only, no CRM record. {{ $(\"Read It And Decide\").item.json.output.reason }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "40b04111-a3f9-57a7-b7a1-279321c6d638",
+      "name": "Filed, No CRM Record",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1472,
+        176
+      ]
+    }
+  ],
+  "connections": {
+    "Run The Desk Now": {
+      "main": [
+        [
+          {
+            "node": "Read The Inbox",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read The Inbox": {
+      "main": [
+        [
+          {
+            "node": "Normalise The Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalise The Email": {
+      "main": [
+        [
+          {
+            "node": "Read It And Decide",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Enquiry Arrives": {
+      "main": [
+        [
+          {
+            "node": "Normalise The Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read It And Decide": {
+      "main": [
+        [
+          {
+            "node": "Log To The Register",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Sonnet 4.6": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Read It And Decide",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log To The Register": {
+      "main": [
+        [
+          {
+            "node": "Is This A Guest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is This A Guest": {
+      "main": [
+        [
+          {
+            "node": "Add Or Update The Guest",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Filed, No CRM Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add Or Update The Guest": {
+      "main": [
+        [
+          {
+            "node": "Is Something Wrong",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Something Wrong": {
+      "main": [
+        [
+          {
+            "node": "Open A Ticket",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tell The Venue",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Open A Ticket": {
+      "main": [
+        [
+          {
+            "node": "Alert The Venue Manager",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Alert The Venue Manager": {
+      "main": [
+        [
+          {
+            "node": "Draft The Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tell The Venue": {
+      "main": [
+        [
+          {
+            "node": "Draft The Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}

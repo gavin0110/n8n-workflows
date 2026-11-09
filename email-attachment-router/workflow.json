@@ -1,0 +1,726 @@
+{
+  "name": "Fillmore & Vine Email Attachment Router",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyHour",
+              "minute": 5
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "to:you@example.com has:attachment",
+          "readStatus": "both"
+        },
+        "options": {
+          "dataPropertyAttachmentsPrefixName": "attachment_",
+          "downloadAttachments": true
+        }
+      },
+      "id": "667785f1-eda1-5f14-8512-ed524d172cec",
+      "name": "New Email With Attachment",
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        176,
+        176
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const inputs = $input.all();\nconst out = [];\nfor (let i = 0; i < inputs.length; i++) {\n  const j = inputs[i].json || {};\n  const bin = inputs[i].binary || {};\n  const h = j.headers || {};\n  let from = \"\";\n  if (typeof j.from === \"string\") { from = j.from; }\n  else if (j.from && j.from.text) { from = j.from.text; }\n  else if (j.from && j.from.value && j.from.value[0]) { from = j.from.value[0].address || \"\"; }\n  else { from = h.from || \"\"; }\n  const subject = j.subject || h.subject || \"(no subject)\";\n  const body = String(j.text || j.snippet || \"\").replace(/\\s+/g, \" \").trim().slice(0, 1500);\n  const receivedAt = j.date || h.date || \"\";\n  const keys = Object.keys(bin).filter(function (k) { return k.indexOf(\"attachment_\") === 0; });\n  for (let n = 0; n < keys.length; n++) {\n    const b = bin[keys[n]];\n    out.push({\n      json: {\n        messageId: j.id || \"\",\n        from: from,\n        subject: subject,\n        bodyText: body,\n        receivedAt: receivedAt,\n        originalFilename: b.fileName || \"unnamed\",\n        mimeType: b.mimeType || \"\",\n        fileSize: b.fileSize || \"\"\n      },\n      binary: { file: b },\n      pairedItem: { item: i }\n    });\n  }\n}\nreturn out;"
+      },
+      "id": "f047939f-f426-59e6-a4c7-a2003af84f21",
+      "name": "Split Attachments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Classify this attachment and extract its details.\n\nSender: {{ $('Split Attachments').item.json.from }}\nSubject: {{ $('Split Attachments').item.json.subject }}\nAttachment filename: {{ $('Split Attachments').item.json.originalFilename }}\nReceived: {{ $('Split Attachments').item.json.receivedAt }}\n\nEmail body:\n{{ $('Split Attachments').item.json.bodyText }}\n\nText read from inside the attached document:\n{{ ($json.text || 'No text could be read from this file.').slice(0, 3000) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "You sort back-office paperwork for a restaurant group. You are given the sender, subject, filename, email body, and the text read from inside the attached document. Weigh them and return one classification.\n\nSignal strength, strongest first: the text inside the document, then the email body, then the sender, and last the filename. A file called scan0042.pdf or IMG_1183.pdf carries no meaning at all.\n\ndocType must be exactly one of:\nSUPPLIER_INVOICE  a bill from a food, drink, linen or equipment supplier, stating an amount owed.\nDELIVERY_DOCKET   a packing slip, delivery confirmation or goods-received note. Lists what arrived. No amount owed.\nCOMPLIANCE        health inspection, food handler certificate, liquor or business permit, fire or pest inspection, insurance certificate.\nUTILITY_BILL      electricity, gas, water, waste, internet or phone.\nUNKNOWN           anything that does not clearly fit, including marketing, statements of account, and personal mail.\n\nRules:\n1. An invoice states money owed. A docket lists goods delivered. If both appear, an amount due makes it SUPPLIER_INVOICE.\n2. vendor is the trading name a restaurant manager would say out loud, not the legal entity and not the email address. Strip company suffixes (LLC, Inc, Ltd, Co) and strip department words from the end of a sender name, so Harbor Point Foods Billing is Harbor Point Foods and Ridgeline Produce Dispatch is Ridgeline Produce. Department words include Billing, Dispatch, Accounts, Accounts Receivable, Invoicing, Support, Customer Service and Notifications.\n3. docNumber is the invoice, docket, permit or account number as printed. Use \"NONE\" if there is not one.\n4. docDate is the date on the document in YYYY-MM-DD. If the document has no date, use the date the email was received.\n5. amount is digits and a decimal point only, no currency symbol. Use \"NONE\" when no amount is stated.\n6. confidence is between 0 and 1 and must reflect real doubt. Score below 0.7 when the sender is unfamiliar, the document text is thin or unreadable, or two types are genuinely plausible.\n7. reasoning is one sentence naming the specific evidence you used, and say whether it came from the document or the email.\n\nNever guess a vendor or a number that is not in the text. An honest UNKNOWN with low confidence is correct and useful.",
+          "maxIterations": 3,
+          "enableStreaming": false
+        }
+      },
+      "id": "e1c37730-7944-5cf5-82ce-fd956d90307f",
+      "name": "Read & Classify Document",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        848,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5.4-mini",
+          "cachedResultName": "gpt-5.4-mini"
+        },
+        "responsesApiEnabled": false,
+        "options": {
+          "maxTokens": 2000,
+          "timeout": 90000
+        }
+      },
+      "id": "a44e315e-9bce-57ed-a9e8-633b55a21253",
+      "name": "Document Reader Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        864,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{ \"docType\": \"SUPPLIER_INVOICE\", \"vendor\": \"Sysco\", \"docNumber\": \"INV-88421\", \"docDate\": \"2026-08-25\", \"amount\": \"1284.60\", \"confidence\": 0.94, \"reasoning\": \"Sender is a food distributor and the body states an amount due with payment terms.\" }"
+      },
+      "id": "9c3e11d8-86dc-5bfb-81b0-6e8ed235daf2",
+      "name": "Document Fields",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        992,
+        320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const RULES = {\n  SUPPLIER_INVOICE: { folder: \"01 Supplier Invoices\", label: \"Invoice\" },\n  DELIVERY_DOCKET:  { folder: \"02 Delivery Dockets\", label: \"Docket\" },\n  COMPLIANCE:       { folder: \"03 Compliance & Permits\", label: \"Compliance\" },\n  UTILITY_BILL:     { folder: \"04 Utility Bills\", label: \"Utility\" }\n};\nconst REVIEW_FOLDER = \"99 Unsorted for Review\";\nconst MIN_CONFIDENCE = 0.7;\n\nconst source = $(\"Split Attachments\").all();\nconst results = $input.all();\nconst out = [];\n\nfor (let i = 0; i < results.length; i++) {\n  const raw = results[i].json || {};\n  const ai = (raw.output && typeof raw.output === \"object\") ? raw.output : raw;\n  const meta = source[i].json;\n  const binary = source[i].binary;\n\n  const declared = String(ai.docType || \"UNKNOWN\").toUpperCase();\n  const confidence = Number(ai.confidence);\n  const scored = isFinite(confidence) ? confidence : 0;\n  const recognised = Object.prototype.hasOwnProperty.call(RULES, declared);\n\n  let route = \"UNSORTED\";\n  let reviewReason = \"\";\n  if (!recognised) { reviewReason = \"Type came back as \" + declared; }\n  else if (scored < MIN_CONFIDENCE) { reviewReason = \"Confidence \" + scored.toFixed(2) + \" is under the \" + MIN_CONFIDENCE + \" threshold\"; }\n  else { route = declared; }\n\n  const rule = route === \"UNSORTED\" ? { folder: REVIEW_FOLDER, label: \"Review\" } : RULES[route];\n\n  const original = String(meta.originalFilename || \"unnamed\");\n  const dot = original.lastIndexOf(\".\");\n  const ext = dot > 0 ? original.slice(dot + 1).toLowerCase() : \"pdf\";\n\n  let docDate = String(ai.docDate || \"\");\n  if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(docDate)) {\n    const fallback = new Date(meta.receivedAt || Date.now());\n    docDate = isNaN(fallback.getTime()) ? \"undated\" : fallback.toISOString().slice(0, 10);\n  }\n\n  const vendorSlug = String(ai.vendor || \"Unknown\").trim().replace(/&/g, \"and\").replace(/[^A-Za-z0-9]+/g, \"-\").replace(/^-+|-+$/g, \"\") || \"Unknown\";\n  const numberRaw = String(ai.docNumber || \"NONE\").trim();\n  const numberSlug = numberRaw.replace(/[^A-Za-z0-9-]+/g, \"-\").replace(/^-+|-+$/g, \"\");\n\n  let newFilename;\n  if (route === \"UNSORTED\") {\n    newFilename = docDate + \"_NEEDS-REVIEW_\" + original;\n  } else if (numberRaw === \"NONE\" || numberSlug === \"\") {\n    newFilename = docDate + \"_\" + vendorSlug + \"_\" + rule.label + \".\" + ext;\n  } else {\n    newFilename = docDate + \"_\" + vendorSlug + \"_\" + rule.label + \"_\" + numberSlug + \".\" + ext;\n  }\n\n  out.push({\n    json: {\n      route: route,\n      folderName: rule.folder,\n      newFilename: newFilename,\n      originalFilename: original,\n      docType: declared,\n      vendor: String(ai.vendor || \"Unknown\"),\n      docNumber: numberRaw,\n      docDate: docDate,\n      amount: String(ai.amount || \"NONE\"),\n      confidence: scored,\n      reasoning: String(ai.reasoning || \"\"),\n      reviewReason: reviewReason,\n      fromAddress: String(meta.from || \"\"),\n      subject: String(meta.subject || \"\"),\n      messageId: String(meta.messageId || \"\")\n    },\n    binary: binary,\n    pairedItem: { item: i }\n  });\n}\n\nreturn out;"
+      },
+      "id": "f22f9b44-f490-5f60-91cf-69d3263e726a",
+      "name": "Apply Filing Rules",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.route }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "SUPPLIER_INVOICE"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Supplier Invoices"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.route }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "DELIVERY_DOCKET"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Delivery Dockets"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.route }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "COMPLIANCE"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Compliance & Permits"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.route }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "UTILITY_BILL"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Utility Bills"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "Unsorted for Review"
+        }
+      },
+      "id": "f6ac2d46-427e-5aa8-9895-038795f5240e",
+      "name": "Route by Document Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        1424,
+        32
+      ]
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "file",
+        "name": "={{ $json.newFilename }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_DRIVE_FOLDER_ID",
+          "cachedResultName": "01 Supplier Invoices"
+        },
+        "options": {
+          "simplifyOutput": false
+        }
+      },
+      "id": "fe769b0f-3de0-52d6-a944-6ea903bf81b8",
+      "name": "File to Supplier Invoices",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1648,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_GOOGLE_SHEET_ID",
+          "cachedResultName": "Fillmore & Vine Document Register"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "Register"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {
+          "cellFormat": "RAW"
+        }
+      },
+      "id": "741219cc-db25-5c7f-a92e-b9b11e997676",
+      "name": "Log to Document Register",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2096,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "file",
+        "name": "={{ $json.newFilename }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_DRIVE_FOLDER_ID",
+          "cachedResultName": "02 Delivery Dockets"
+        },
+        "options": {
+          "simplifyOutput": false
+        }
+      },
+      "id": "05a04c6b-bf4b-5d61-b7df-16ce99e7eb23",
+      "name": "File to Delivery Dockets",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1648,
+        -112
+      ]
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "file",
+        "name": "={{ $json.newFilename }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_DRIVE_FOLDER_ID",
+          "cachedResultName": "03 Compliance & Permits"
+        },
+        "options": {
+          "simplifyOutput": false
+        }
+      },
+      "id": "d8382a63-e424-56b2-836b-36693417f043",
+      "name": "File to Compliance & Permits",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1648,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "file",
+        "name": "={{ $json.newFilename }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_DRIVE_FOLDER_ID",
+          "cachedResultName": "04 Utility Bills"
+        },
+        "options": {
+          "simplifyOutput": false
+        }
+      },
+      "id": "55cad55a-ac6c-5339-9fcd-b03304b619d4",
+      "name": "File to Utility Bills",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1648,
+        272
+      ]
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "file",
+        "name": "={{ $json.newFilename }}",
+        "driveId": {
+          "__rl": true,
+          "mode": "list",
+          "value": "My Drive"
+        },
+        "folderId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "YOUR_DRIVE_FOLDER_ID",
+          "cachedResultName": "99 Unsorted for Review"
+        },
+        "options": {
+          "simplifyOutput": false
+        }
+      },
+      "id": "875f9735-49bf-5861-8cb8-04a4bb18d4ad",
+      "name": "File to Unsorted for Review",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [
+        1648,
+        464
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## The filing rules\nDocument type, target folder and the naming pattern are set in one place. Anything under 0.7 confidence is filed to review instead of guessed.",
+        "height": 200,
+        "width": 540,
+        "color": 4
+      },
+      "id": "ded76f47-1ba6-58a1-9d25-04f2cfcbe517",
+      "name": "Sticky Note e08f01f5",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        912,
+        -304
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Reads the document, not the filename\nThe text inside the PDF decides the type, with the email body and sender as backup. A file called scan0042.pdf still lands correctly.",
+        "height": 200,
+        "width": 300,
+        "color": 3
+      },
+      "id": "df90068f-8125-5234-94bc-ad83f7ca198a",
+      "name": "Sticky Note 4a9629c8",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        448,
+        -272
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "a4a202fa-eeda-5050-9202-7088517949ed",
+      "name": "Run It Now",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -48,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "limit": 10,
+        "simple": false,
+        "filters": {
+          "q": "to:you@example.com has:attachment",
+          "readStatus": "both"
+        },
+        "options": {
+          "dataPropertyAttachmentsPrefixName": "attachment_",
+          "downloadAttachments": true
+        }
+      },
+      "id": "44dd4b29-4d1e-5052-816d-4de05f5b3829",
+      "name": "Fetch Recent Attachments",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        176,
+        -16
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const rules = $('Apply Filing Rules').all();\nconst byName = {};\nfor (let i = 0; i < rules.length; i++) { byName[rules[i].json.newFilename] = rules[i].json; }\n\nconst stamp = $now.toFormat('yyyy-MM-dd HH:mm');\nconst items = $input.all();\nconst out = [];\n\nfor (let i = 0; i < items.length; i++) {\n  const d = items[i].json || {};\n  const r = byName[d.name] || {};\n  out.push({\n    json: {\n      'Filed At': stamp,\n      'Document Type': r.docType || '',\n      'Vendor': r.vendor || '',\n      'Document Number': r.docNumber || '',\n      'Document Date': r.docDate || '',\n      'Amount': r.amount || '',\n      'Original Filename': r.originalFilename || '',\n      'Filed As': d.name || '',\n      'Folder': r.folderName || '',\n      'Confidence': r.confidence === undefined ? '' : r.confidence,\n      'Why': r.reviewReason ? r.reviewReason : (r.reasoning || ''),\n      'From': r.fromAddress || '',\n      'Drive Link': d.webViewLink || ''\n    }\n  });\n}\n\nreturn out;"
+      },
+      "id": "6eb7e5a0-3ebd-5aa1-aee0-c7cc98b549c4",
+      "name": "Build Register Row",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1872,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "file",
+        "options": {
+          "joinPages": true,
+          "keepSource": "both"
+        }
+      },
+      "id": "4ae41ed5-a254-5696-8577-de458bee2e40",
+      "name": "Read Document Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        624,
+        80
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## Run a batch on demand\nThe Gmail trigger above picks up new mail on its own, one email at a time. This path re-runs everything sitting in the inbox in one go.",
+        "height": 150,
+        "width": 340,
+        "color": 5
+      },
+      "id": "52954ecb-b733-5254-93dc-e2ce329e4b1f",
+      "name": "Sticky Note batch",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -48,
+        368
+      ]
+    }
+  ],
+  "connections": {
+    "New Email With Attachment": {
+      "main": [
+        [
+          {
+            "node": "Split Attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read & Classify Document": {
+      "main": [
+        [
+          {
+            "node": "Apply Filing Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Document Reader Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Read & Classify Document",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Document Fields": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Read & Classify Document",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apply Filing Rules": {
+      "main": [
+        [
+          {
+            "node": "Route by Document Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Document Type": {
+      "main": [
+        [
+          {
+            "node": "File to Supplier Invoices",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "File to Delivery Dockets",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "File to Compliance & Permits",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "File to Utility Bills",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "File to Unsorted for Review",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run It Now": {
+      "main": [
+        [
+          {
+            "node": "Fetch Recent Attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Recent Attachments": {
+      "main": [
+        [
+          {
+            "node": "Split Attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File to Supplier Invoices": {
+      "main": [
+        [
+          {
+            "node": "Build Register Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File to Delivery Dockets": {
+      "main": [
+        [
+          {
+            "node": "Build Register Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File to Compliance & Permits": {
+      "main": [
+        [
+          {
+            "node": "Build Register Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File to Utility Bills": {
+      "main": [
+        [
+          {
+            "node": "Build Register Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "File to Unsorted for Review": {
+      "main": [
+        [
+          {
+            "node": "Build Register Row",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Register Row": {
+      "main": [
+        [
+          {
+            "node": "Log to Document Register",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Split Attachments": {
+      "main": [
+        [
+          {
+            "node": "Read Document Text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Read Document Text": {
+      "main": [
+        [
+          {
+            "node": "Read & Classify Document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/Los_Angeles",
+    "binaryMode": "separate"
+  },
+  "pinData": {}
+}
